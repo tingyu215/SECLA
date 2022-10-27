@@ -24,7 +24,7 @@ You can find Celeberty Together [here](https://www.robots.ox.ac.uk/~vgg/data/cel
 
 You can download the dictionary I made for Celebrity Together [here](https://drive.google.com/drive/folders/1GSZrpFgS9Yv1274kXpGOIA1B4Z3fhnAL?usp=sharing). 
 
-    mkdir CelebrityTo # make the dir and copy the dict in it
+    mkdir CelebrityTo # make the dir and download the dict there
 
 ## Train
 
