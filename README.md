@@ -22,6 +22,10 @@ If you cannot find the dataset online, please contact us. The dictionary for rea
 
 You can find Celeberty Together [here](https://www.robots.ox.ac.uk/~vgg/data/celebrity_together/). The dictionary for reading the dataset is provided in /CelebrityTo
 
+You can download the dictionary I made for Celebrity Together [here](https://drive.google.com/drive/folders/1GSZrpFgS9Yv1274kXpGOIA1B4Z3fhnAL?usp=sharing). 
+
+    mkdir CelebrityTo # make the dir and copy the dict in it
+
 ## Train
 
 ### SECLA
