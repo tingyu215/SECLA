@@ -1,5 +1,5 @@
 #!/bin/sh
-python /FaceNaming/unsup_fragment_align_incre_copy.py --sys_dir /FaceNaming \
+python /FaceNaming/unsup_fragment_align_incre.py --sys_dir /FaceNaming \
 --out_dir /OUTPUTDIR/face_naming/unsup_frag_incre \
 --full_dict_name gt_dict_cleaned_phi_face_name.json \
 --one_dict_name gt_dict_cleaned_phi_face_name_one.json \
