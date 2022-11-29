@@ -1,5 +1,5 @@
 #!/bin/sh
-python /FaceNaming/unsup_fragment_align_celeb_incre.py --base_dir /DATADIR/CelebTo/images_ct \
+python /FaceNaming/face_align_celeb_incre.py --base_dir /DATADIR/CelebTo/images_ct \
 --dict_dir /FaceNaming/CelebrityTo \
 --out_dir /OUTPUTDIR/face_naming/celeb_incre \
 --full_dict_name celeb_dict.json \

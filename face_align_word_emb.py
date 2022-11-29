@@ -20,7 +20,7 @@ from torch.optim import SGD
 from transformers import BertTokenizer, BertModel
 from transformers import AdamW, get_linear_schedule_with_warmup
 
-from models.unsup_frag_word_emb import UnsupFragAlign, UnsupFragAlign_FineTune, FragAlignLoss, GlobalRankLoss, BatchSoftmax, BatchSoftmaxSplit
+from models.face_align_model_word_emb import UnsupFragAlign, UnsupFragAlign_FineTune, FragAlignLoss, GlobalRankLoss, BatchSoftmax, BatchSoftmaxSplit
 from modules.lars import LARS
 
 # from models.character_bert.modeling.character_bert import CharacterBertModel

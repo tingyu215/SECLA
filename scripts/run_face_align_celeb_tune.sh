@@ -1,5 +1,5 @@
 #!/bin/sh
-python /FaceNaming/unsup_fragment_align_tune_celeb.py --base_dir /DATADIR/CelebTo/images_ct \
+python /FaceNaming/face_align_tune_celeb.py --base_dir /DATADIR/CelebTo/images_ct \
 --dict_dir /FaceNaming/CelebrityTo \
 --out_dir /OUTPUTDIR/face_naming/celeb \
 --dict_name rest_unmatch_2name_allname_alpha0.15_agree-diag_new.json \

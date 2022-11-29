@@ -32,8 +32,8 @@ You can download the dictionary I made for Celebrity Together [here](https://dri
 
 You can train SECLA model using the command
 
-    bash run_unsup_frag_align.sh # LFW data
-    bash run_unsup_frag_align_celeb.sh # Celebrity Together data
+    bash run_face_align.sh # LFW data
+    bash run_face_align_celeb.sh # Celebrity Together data
 
 Remember to replace OUTPUTDIR and DATADIR accordingly.
 
@@ -42,8 +42,8 @@ Remember to replace OUTPUTDIR and DATADIR accordingly.
 
 You can train SECLA-B model using the command
 
-    bash run_unsup_frag_align_incre.sh # LFW data
-    bash run_unsup_frag_align_celeb_incre.sh # Celebrity Together data
+    bash run_face_align_incre.sh # LFW data
+    bash run_face_align_celeb_incre.sh # Celebrity Together data
 
 Remember to replace OUTPUTDIR and DATADIR accordingly.
 

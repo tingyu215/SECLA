@@ -2,9 +2,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 from re import T
-import time
 
-from scripts.dataset import CelebDataset, crop_resize
+from scripts.dataset import FaceDataset, crop_resize
 
 import os
 from tqdm import tqdm
@@ -23,8 +22,8 @@ from torch.optim import SGD
 from transformers import BertTokenizer, BertModel
 from transformers import AdamW, get_linear_schedule_with_warmup
 
-from models.unsup_frag import UnsupFragAlign, UnsupFragAlign_FineTune, FragAlignLoss, GlobalRankLoss, BatchSoftmax, BatchSoftmaxSplit, batch_softmax, batch_agreement
-from models.unsup_frag_incre import UnsupIncre
+from models.face_align_model import UnsupFragAlign, UnsupFragAlign_FineTune, FragAlignLoss, GlobalRankLoss, BatchSoftmax, BatchSoftmaxSplit, batch_softmax, batch_agreement
+from models.face_align_model_incre import UnsupIncre
 from modules.lars import LARS
 
 # from models.character_bert.modeling.character_bert import CharacterBertModel
@@ -40,15 +39,12 @@ import datetime
 import argparse
 
 parser = argparse.ArgumentParser()
-
-parser.add_argument("--base_dir", type=str, default="/cw/working-rose/CelebTo/images_ct")
-parser.add_argument("--dict_dir", type=str, default="/cw/liir_code/NoCsBack/tingyu/FaceNaming/CelebTo")
-parser.add_argument("--out_dir", type=str, default="/cw/working-rose/tingyu/FaceNaming/results/celeb")
-parser.add_argument("--full_dict_name", type=str, default="celeb_dict.json")
-parser.add_argument("--2name_dict_name" ,type=str, default="celeb_dict_2name.json")
-parser.add_argument("--dict_name", type=str, default="celeb_dict_2name_rest.json")
-parser.add_argument("--data_name", type=str, default="2name")
-
+parser.add_argument("--sys_dir", type=str, default="/export/home1/NoCsBack/hci/tingyu/FaceNaming")
+parser.add_argument("--base_dir_name", type=str, default="Berg")
+parser.add_argument("--out_dir", type=str, default="/export/home2/NoCsBack/working/tingyu/face_naming/unsup_frag_incre") 
+parser.add_argument("--full_dict_name", type=str, default="gt_dict_cleaned_phi_face_name.json")
+parser.add_argument("--one_dict_name" ,type=str, default="gt_dict_cleaned_phi_face_name_one.json")
+parser.add_argument("--dict_name", type=str, default="gt_dict_cleaned_phi_face_name_one_rest.json")
 parser.add_argument("--add_extra_proj", default=False, type=lambda x: (str(x).lower() == 'true'))
 parser.add_argument("--freeze_stage1", default=False, type=lambda x: (str(x).lower() == 'true'))
 parser.add_argument("--manual_add_one", default=False, type=lambda x: (str(x).lower() == 'true'))
@@ -67,15 +63,13 @@ parser.add_argument("--match_proto_agree", default=False, type=lambda x: (str(x)
 parser.add_argument("--noname_to_match", default=False, type=lambda x: (str(x).lower() == 'true'))
 parser.add_argument("--add_nullface", default=False, type=lambda x: (str(x).lower() == 'true'))
 
+
 parser.add_argument("--no_stage1", default=False, type=lambda x: (str(x).lower() == 'true'))
-
-parser.add_argument("--unique_name_avg_face_dict_name", type=str, default="celeb_dict_2name_avg_face.json")
-
+parser.add_argument("--unique_name_avg_face_dict_name", type=str, default="gt_dict_cleaned_phi_face_name_one_unique_avg_face.json")
 parser.add_argument("--sample_type", type=str, default="True")
-parser.add_argument("--unique_name_dict_name", type=str, default="celeb_dict_2name_unique.json")
+parser.add_argument("--unique_name_dict_name", type=str, default="gt_dict_cleaned_phi_face_name_one_unique.json")
 
 parser.add_argument("--batch_rest", type=int, default=1)
-parser.add_argument("--stage1_model_dir", type=str, default="/export/home1/NoCsBack/working/tingyu/face_naming/celeb")
 parser.add_argument("--stage1_model_name", type=str, default="unsup_frag_e_one_two5-proj_dim:128_biasTrue_1.0data:train_loss:batch-0.25-agree-normal-full_bsz:20_shuffle-True_epoch15_op:adam_lr0.0003_nonameTrue_True_textModelbert-uncased_finetune-False_mean-True-True-layerS-4.pt")
 parser.add_argument("--beta_incre", type=float, default=0.5)
 
@@ -318,24 +312,193 @@ def prep_for_training(model, optimizer_type, train_size):
         )
     elif optimizer_type == "sgd":
         optimizer = SGD(optimizer_grouped_parameters, args.lr, args.sgd_momentum, weight_decay=args.weight_decay)
+        # optimizer = SGD(model.parameters(), args.lr, args.sgd_momentum)
+
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        # optimizer, T_max=args.num_epoch, eta_min=0, last_epoch=-1
         optimizer, T_max=args.lr_scheduler_tmax, eta_min=0, last_epoch=-1
     )
 
     return model, optimizer, scheduler
 
-def train_incre_epoch(model, loss_type, frag_loss, global_loss, train_dataloader, one_data, real_bsz, optimizer, scheduler):
+def train_epoch(model, loss_type, frag_loss, global_loss, train_dataloader, optimizer, scheduler):
+    # torch.cuda.set_device(args.local_rank)
     model.train()
     tr_loss = 0
     nb_tr_steps = 0
     for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
-        face_emb, ner_features, ner_ids, word_emb = batch["face_emb"], batch["ner_features"], batch["ner_ids"], batch["word_emb"]
+        face_emb, face_tensor, ner_features, ner_list, ner_context_features, ner_ids, word_emb = batch["face_emb"], batch["face_tensor"], \
+                                                                                       batch["ner_features"], batch["ner_list"], \
+                                                                                       batch["ner_context_features"], batch["ner_ids"], batch["word_emb"]
+        # face_j, ner_j = model(face_emb.squeeze(1).to(DEVICE), ner_ids.to(DEVICE))
+        if args.fine_tune is True:
+            face_j, ner_j = model(face_emb.squeeze(1).to(DEVICE), ner_ids.to(DEVICE))
+        # elif args.add_context is True:
+        #     face_j, ner_j = model(face_emb.squeeze(1).to(DEVICE), ner_context_features.squeeze(1).to(DEVICE))
+        elif args.use_onehot:
+            face_j, ner_j = model(face_emb.squeeze(1).cuda(), word_emb.squeeze(1).cuda())
+        else:
+            face_j, ner_j = model(face_emb.squeeze(1).cuda(), ner_features.squeeze(1).cuda())
+
+        face_j, ner_j = face_j.to(DEVICE), ner_j.to(DEVICE)
+        # print(face_j)
+        # print(ner_j)
+
+        # print(torch.matmul(ner_j.unsqueeze(1), face_j.permute(0, 2, 1)).size())
+        # print(face_j.size())
+        # print(ner_j.size())
+        if loss_type == "all":
+            a = frag_loss(face_j, ner_j)
+            b = global_loss(face_j, ner_j)
+            loss = a + b
+        else:
+            loss = frag_loss(face_j, ner_j)
+
+        if torch.cuda.device_count() > 1:
+            loss = loss.mean()
+        else:
+            loss = loss
+        if args.use_onehot:
+            loss.backward(retain_graph=True)
+        else:
+            loss.backward()
+
+
+        tr_loss += loss.item()
+        nb_tr_steps += 1
+
+        optimizer.step()
+        scheduler.step()
+        optimizer.zero_grad()
+
+        if step % 20 == 0 and not step == 0:
+            print(f"step {step} / {len(train_dataloader)} | loss = {tr_loss / nb_tr_steps}")
+
+    return tr_loss / nb_tr_steps
+
+
+def eval_epoch(model, loss_type, frag_loss, global_loss, val_dataloader):
+# def eval_epoch(model, criterion, val_dataloader):
+    model.eval()
+    dev_loss = 0
+    nb_dev_steps = 0
+    with torch.no_grad():
+        for step, batch in enumerate(tqdm(val_dataloader, desc="Iteration")):
+            face_emb, face_tensor, ner_features, ner_list, ner_context_features = batch["face_emb"], batch["face_tensor"], \
+                                                                                  batch["ner_features"], batch["ner_list"], \
+                                                                                  batch["ner_context_features"]
+            if args.add_context is True:
+                face_j, ner_j = model(face_emb.squeeze(1).to(DEVICE), ner_context_features.squeeze(1).to(DEVICE))
+            else:
+                face_j, ner_j = model(face_emb.squeeze(1).to(DEVICE), ner_features.squeeze(1).to(DEVICE))
+
+            # loss = criterion(face_j, ner_j)
+
+            if loss_type == "all":
+                a = frag_loss(face_j, ner_j)
+                b = global_loss(face_j, ner_j)
+                loss = a + b
+            else:
+                loss = frag_loss(face_j, ner_j)
+            # elif loss_type == "frag":
+            #     loss = frag_loss(face_j, ner_j)
+            # elif loss_type == "batch":
+            #     loss = frag_loss(face_j, ner_j)
+
+            dev_loss += loss.item()
+            nb_dev_steps += 1
+
+    return dev_loss / nb_dev_steps
+
+
+def train(
+        model,
+        # criterion,
+        loss_type,
+        frag_loss,
+        global_loss,
+        train_dataloader,
+        validation_dataloader,
+        optimizer,
+        scheduler,
+):
+    train_losses = []
+    valid_losses = []
+    test_accuracies = []
+
+    for epoch_i in range(int(args.num_epoch)):
+        # train_loss = train_epoch(model, criterion, train_dataloader, optimizer, scheduler)
+        # valid_loss = eval_epoch(model, criterion, validation_dataloader)
+        train_loss = train_epoch(model, loss_type, frag_loss, global_loss, train_dataloader, optimizer, scheduler)
+        valid_loss = eval_epoch(model, loss_type, frag_loss, global_loss, validation_dataloader)
+
+        print(
+            "epoch:{}, train_loss:{}, valid_loss:{}".format(
+                epoch_i+1, train_loss, valid_loss
+            )
+        )
+
+        train_losses.append(train_loss)
+        valid_losses.append(valid_loss)
+
+    return train_losses, valid_losses
+
+
+def train_all(
+        model,
+        # criterion,
+        loss_type,
+        frag_loss,
+        global_loss,
+        all_dataloader,
+        optimizer,
+        scheduler,
+):
+    train_losses = []
+    # valid_losses = []
+    # test_accuracies = []
+
+    for epoch_i in range(int(args.num_epoch)):
+        # train_loss = train_epoch(model, criterion, train_dataloader, optimizer, scheduler)
+        train_loss = train_epoch(model, loss_type, frag_loss, global_loss, all_dataloader, optimizer, scheduler)
+
+        print(
+            "epoch:{}, train_loss:{}".format(
+                epoch_i, train_loss
+            )
+        )
+
+        train_losses.append(train_loss)
+
+    return train_losses
+
+
+def train_incre_epoch(model, loss_type, frag_loss, global_loss, train_dataloader, one_data, real_bsz, optimizer, scheduler):
+    # torch.cuda.set_device(args.local_rank)
+    model.train()
+    tr_loss = 0
+    nb_tr_steps = 0
+    for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
+        face_emb, face_tensor, ner_features, ner_list, ner_ids, word_emb = batch["face_emb"], batch["face_tensor"], \
+                                                                           batch["ner_features"], batch["ner_list"], \
+                                                                           batch["ner_ids"], batch["word_emb"]
+        # face_j, ner_j = model(face_emb.squeeze(1).to(DEVICE), ner_ids.to(DEVICE))
 
         sample_indices = random.sample(range(len(one_data)), real_bsz-args.batch_rest)
+        # print(sample_indices)
         one_one_samples = Subset(one_data, indices=sample_indices)
+
+        # print(type(face_emb))
 
         face_emb_one_list = []
         ner_feat_one_list = []
+
+        # for sample in one_one_samples:
+        #     face_emb_list.append(sample["face_emb"].squeeze(0))
+        #     ner_features_list.append(sample["ner_features"].squeeze(0))
+
+        # face_emb_final = ZeroPadCollator.collate_tensors(face_emb_list)
+        # ner_features_final = ZeroPadCollator.collate_tensors(ner_features_list)
 
         for sample in one_one_samples:
             face_emb_one_list.append(sample["face_emb"])
@@ -388,6 +551,7 @@ def train_incre_epoch(model, loss_type, frag_loss, global_loss, train_dataloader
 
 def collate_tensors_by_size(batch, max_face_size):
     dims_face_emb = batch[0].dim()
+    # print("max_face_size:{}".format(max_face_size))
     size = (len(batch),) + tuple(max_face_size)
 
     canvas = batch[0].new_zeros(size=size)
@@ -409,6 +573,8 @@ def train_all_incre(
         one_data, real_bsz,
 ):
     train_losses = []
+    # valid_losses = []
+    # test_accuracies = []
 
     for epoch_i in range(int(args.num_epoch)):
         train_loss = train_incre_epoch(model, loss_type, frag_loss, global_loss, all_dataloader, one_data, real_bsz, optimizer, scheduler)
@@ -424,12 +590,17 @@ def train_all_incre(
     return train_losses
 
 
-def train_incre_control_one_epoch(model, loss_type, frag_loss, global_loss, train_dataloader, unique_name_avg_face_dict, unique_name_dict, text_model, face_model, sample_type, optimizer, scheduler):
+def train_incre_control_one_epoch(model, loss_type, frag_loss, global_loss, train_dataloader,
+                                  unique_name_avg_face_dict, unique_name_dict,
+                                  text_model, face_model,
+                                  sample_type,
+                                  optimizer, scheduler):
     model.train()
     tr_loss = 0
     nb_tr_steps = 0
     for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
-        face_emb, ner_features, ner_ids, word_emb, name_list = batch["face_emb"], batch["ner_features"], batch["ner_ids"], batch["word_emb"],  batch["names"]
+        face_emb, face_tensor, ner_features, ner_list, ner_ids, word_emb, name_list = batch["face_emb"], batch["face_tensor"], batch["ner_features"], batch["ner_list"], batch["ner_ids"], batch["word_emb"],  batch["names"]
+        # face_j, ner_j = model(face_emb.squeeze(1).to(DEVICE), ner_ids.to(DEVICE))
 
         name_from_one_one = []
         for i in range(len(name_list)):
@@ -440,9 +611,19 @@ def train_incre_control_one_epoch(model, loss_type, frag_loss, global_loss, trai
         if len(name_from_one_one) > 0 and len(name_from_one_one) < args.batch_rest:
             if sample_type == "prototype":
 
-                face_emb_one_list, ner_feat_one_list = prepare_prototypes(unique_name_avg_face_dict, list(set(name_from_one_one)), args.add_special_token, args.layer_start, args.layer_end, text_model, face_model, DEVICE)
+                face_emb_one_list, ner_feat_one_list = prepare_prototypes(unique_name_avg_face_dict,
+                                                                          list(set(name_from_one_one)),
+                                                                          args.add_special_token,
+                                                                          args.layer_start,
+                                                                          args.layer_end,
+                                                                          text_model, face_model, DEVICE)
             else:
-                face_emb_one_list, ner_feat_one_list = prepare_samples(unique_name_dict, list(set(name_from_one_one)), args.add_special_token, args.layer_start, args.layer_end, text_model, face_model)
+                face_emb_one_list, ner_feat_one_list = prepare_samples(unique_name_dict,
+                                                                       list(set(name_from_one_one)),
+                                                                       args.add_special_token,
+                                                                       args.layer_start,
+                                                                       args.layer_end,
+                                                                       text_model, face_model)
             face_emb_one_pad = collate_tensors_by_size(face_emb_one_list, [1, face_emb.size(-2), face_emb.size(-1)])
             ner_feat_one_pad = collate_tensors_by_size(ner_feat_one_list,
                                                        [1, ner_features.size(-2), ner_features.size(-1)])
@@ -514,7 +695,11 @@ def train_all_control_one_incre(
 ):
     train_losses = []
     for epoch_i in range(int(args.num_epoch)):
-        train_loss = train_incre_control_one_epoch(model, loss_type, frag_loss, global_loss, train_dataloader, unique_name_avg_face_dict, unique_name_dict, text_model, face_model, sample_type, optimizer, scheduler)
+        train_loss = train_incre_control_one_epoch(model, loss_type, frag_loss, global_loss, train_dataloader,
+                                  unique_name_avg_face_dict, unique_name_dict,
+                                                   text_model, face_model,
+                                                   sample_type,
+                                  optimizer, scheduler)
         print(
             "epoch:{}, train_loss:{}".format(
                 epoch_i, train_loss
@@ -527,7 +712,8 @@ def train_all_control_one_incre(
 
 
 
-def prepare_prototypes(unique_name_avg_face_dict, name_list, add_special_token, layer_start, layer_end, text_model, face_model, DEVICE):
+def prepare_prototypes(unique_name_avg_face_dict, name_list, add_special_token, layer_start, layer_end,
+                       text_model, face_model, DEVICE):
 
     face_feat_list = []
     ner_feat_list = []
@@ -576,10 +762,13 @@ def prepare_samples(unique_name_dict, name_list, add_special_token, layer_start,
 
 
 def prepare_sampled_face(face_model, base_dir, unique_name_dict, face_idx, out_face_size):
-    img_name = unique_name_dict["img_dir"][face_idx]
-    img_dir = os.path.join("/cw/working-rose/CelebTo/images_ct", img_name)
+    img_name = unique_name_dict["img_name"][face_idx][0]
+    img_dir = os.path.join(base_dir, "data/BergData/pics", img_name)
+    face_x = unique_name_dict["face_x"][face_idx][0]
+    face_y = unique_name_dict["face_y"][face_idx][0]
+    face_size = unique_name_dict["face_size"][face_idx][0]
 
-    face_bbox = unique_name_dict["bbox"][face_idx]
+    face_bbox = [face_x - face_size, face_y - face_size, face_x + face_size, face_y + face_size]
 
     img = Image.open(img_dir).convert("RGB")
 
@@ -637,8 +826,8 @@ class ZeroPadCollator:
         num_faces = self.split_batch(batch, "num_faces")
         face_tensors = self.split_batch(batch, "face_tensor")
         face_features = self.split_batch(batch, "face_emb")
-        # caption_raw = self.split_batch(batch, "caption_raw")
-        # caption_ids = self.split_batch(batch, "caption_ids")
+        caption_raw = self.split_batch(batch, "caption_raw")
+        caption_ids = self.split_batch(batch, "caption_ids")
         ner_ids = self.split_batch(batch, "ner_ids")
         caption_emb = self.split_batch(batch, "caption_emb")
         img_rgb = self.split_batch(batch, "img_rgb")
@@ -652,28 +841,29 @@ class ZeroPadCollator:
         pad_ner_ids = self.collate_tensors(ner_ids)
         pad_face_tensors = self.collate_tensors(face_tensors)
         pad_face_features = self.collate_tensors(face_features)
-        # pad_caption_emb = self.collate_tensors(caption_emb)
+        pad_caption_emb = self.collate_tensors(caption_emb)
         pad_ner_features = self.collate_tensors(ner_features)
-        # pad_ner_context_features = self.collate_tensors(ner_context_features)
-        # pad_word_emb = self.collate_tensors(word_emb)
+        pad_ner_context_features = self.collate_tensors(ner_context_features)
+        pad_word_emb = self.collate_tensors(word_emb)
 
         return {
             "num_faces": num_faces,
             "face_tensor": pad_face_tensors,
             # "face_tensor": [self.collate_tensors([b["face_tensor"] for b in batch])],
             "face_emb": pad_face_features,
-            "caption_raw": {},
-            "caption_ids": {},
+            "caption_raw": caption_raw,
+            "caption_ids": caption_ids,
             "ner_ids": pad_ner_ids,
-            "caption_emb": {},
+            "caption_emb": pad_caption_emb,
             "img_rgb": img_rgb,
             "names": names,
             "ner_list": ner_list,
             "ner_features": pad_ner_features,
-            "ner_context_features": {},
+            "ner_context_features": pad_ner_context_features,
             # "name_ids": name_ids,
-            "word_emb": {},
+            "word_emb": pad_word_emb,
         }
+
 
 
 def batch_softmax_nomax(phrase_region_match):
@@ -929,7 +1119,8 @@ def batch_match_incre(model, add_sample,
     return face_match_emb, name_match_emb, face_unmatch_emb, name_unmatch_emb, num_matched_names
 
 
-def add_prototypes(unique_name_avg_face_dict, nomax, matched_names, name_match_list, face_match_list, add_special_token, layer_start, layer_end, text_model, face_model, DEVICE):
+def add_prototypes(unique_name_avg_face_dict, nomax, matched_names, name_match_list, face_match_list, add_special_token, layer_start, layer_end,
+                   text_model, face_model, DEVICE):
     if args.add_to == "match":
         for i, matched_list in enumerate(matched_names):
             face_feat_add = torch.empty((len(matched_list), 512))
@@ -964,7 +1155,8 @@ def add_prototypes(unique_name_avg_face_dict, nomax, matched_names, name_match_l
     return face_match_list, name_match_list
 
 
-def add_random_sample(unique_name_dict, nomax, matched_names, name_match_list, face_match_list, add_special_token, layer_start, layer_end, text_model, face_model):
+def add_random_sample(unique_name_dict, nomax, matched_names, name_match_list, face_match_list, add_special_token, layer_start, layer_end,
+                   text_model, face_model):
     if args.add_to == "match":
         for i, matched_list in enumerate(matched_names):
             face_feat_add = torch.empty((len(matched_list), 512))
@@ -1018,7 +1210,10 @@ def check_names_d_one(name_list):
         return False
 
 
-def batch_match_incre_make_new(model, add_sample, text_model, face_model, add_extra_proj, proj_type, batch, dict_one_unique, unique_name_avg_face_dict, null_face):
+def batch_match_incre_make_new(model, add_sample,
+                      text_model, face_model,
+                      add_extra_proj, proj_type, batch,
+                      dict_one_unique, unique_name_avg_face_dict, null_face):
     face_emb, ner_features, name_list, num_faces = batch["face_emb"], batch["ner_features"], batch["names"], batch["num_faces"]
 
     face_unmatch_list = []
@@ -1033,8 +1228,8 @@ def batch_match_incre_make_new(model, add_sample, text_model, face_model, add_ex
     for i in range(len(name_list)):
         name_from_one_one = []
         for name in name_list[i]:
-            if name in dict_one_unique.keys():
-                name_from_one_one.append(name)
+            if name[0] in dict_one_unique.keys():
+                name_from_one_one.append(name[0])
         # print("{}th name list:{}".format(i, name_from_one_one))
 
         # de-padding face_emb
@@ -1049,7 +1244,7 @@ def batch_match_incre_make_new(model, add_sample, text_model, face_model, add_ex
         # print(aligned_names)
         # aligned_names_unique = list(set(aligned_names))
         #
-        aligned_names_unique = unique([name for name in aligned_names])
+        aligned_names_unique = unique([name[0] for name in aligned_names])
         # print(aligned_names_unique)
 
         deleted_face_idx = []
@@ -1068,10 +1263,10 @@ def batch_match_incre_make_new(model, add_sample, text_model, face_model, add_ex
             for idx, name in enumerate(name_from_one_one):
                 if name in aligned_names_unique:
 
-                    name_aligned_count = Counter([name for name in aligned_names])
-                    name_index = name_list[i].index(name)
+                    name_aligned_count = Counter([name[0] for name in aligned_names])
+                    name_index = name_list[i].index([name])
 
-                    aligned_idx = duplicates_idx(aligned_names, name)
+                    aligned_idx = duplicates_idx(aligned_names, [name])
 
                     aligned_sim_scores = [sim_scores[i] for i in aligned_idx]
                     name_associate_scores = [score[name_index] for score in aligned_sim_scores]
@@ -1091,8 +1286,8 @@ def batch_match_incre_make_new(model, add_sample, text_model, face_model, add_ex
                         matched_name_one_sample.append(name)
 
                     else:
-                        deleted_face_idx.append(aligned_names.index(name))
-                        deleted_name_idx.append(name_list[i].index(name))
+                        deleted_face_idx.append(aligned_names.index([name]))
+                        deleted_name_idx.append(name_list[i].index([name]))
                         matched_name_one_sample.append(name)
                 else:
                     continue
@@ -1130,15 +1325,22 @@ def batch_match_incre_make_new(model, add_sample, text_model, face_model, add_ex
 
             if len(matched_name_one_sample) > 0:
                 matched_names.append(matched_name_one_sample)
+    
+    # print(face_match_list[0].size())
+    # print(matched_names)
+    # print(null_face)
 
     if add_sample == "prototype":
         face_add_list, name_match_list = make_prototypes(unique_name_avg_face_dict, args.noname_to_match, matched_names, name_match_list, True, -4, None, text_model, face_model, null_face, "cuda")
     elif add_sample == "near":
         face_add_list, name_match_list = make_nearest_face(model, dict_one_unique, args.noname_to_match, matched_names, name_match_list, True, -4, None, text_model, face_model, null_face, 160, 128, "cuda")
     else:
-        # add_sample == random, mid-sim, mid-pdist
         face_add_list, name_match_list = make_random_faces(dict_one_unique, args.noname_to_match, matched_names, name_match_list, True, -4, None, text_model, face_model, null_face, "cuda")
     
+    # if args.add_nullface:
+    #     null_face = torch.randn((1,512)).cuda()
+    #     face_add_list.append(null_face)
+    #     face_match_list.append(null_face)
 
     if len(face_match_list) > 0:
         max_faces_match = max([face_emb.size()[1]  for face_emb in face_match_list])
@@ -1180,7 +1382,7 @@ def make_prototypes(unique_name_avg_face_dict, nomax, matched_names, name_match_
     # make prototype faces list for each matched names
     face_proto_list = []
     for i, matched_list in enumerate(matched_names):
-        if args.add_nullface and len(matched_list)>0:
+        if args.add_nullface:
             face_feat_add = torch.empty((len(matched_list)+1, 512))
         else:
             face_feat_add = torch.empty((len(matched_list), 512))
@@ -1188,8 +1390,8 @@ def make_prototypes(unique_name_avg_face_dict, nomax, matched_names, name_match_
             avg_face = Image.open(unique_name_avg_face_dict[name]["avg_face_dir"]).convert("RGB")
             face_feat = face_model(transforms.ToTensor()(avg_face).to(DEVICE).unsqueeze_(0).to(DEVICE))
             face_feat_add[j] = face_feat
-
-        if args.add_nullface and len(matched_list)>0:
+        
+        if args.add_nullface:
             face_feat_add[-1] = null_face
         else:
             face_feat_add = face_feat_add
@@ -1200,7 +1402,9 @@ def make_prototypes(unique_name_avg_face_dict, nomax, matched_names, name_match_
             noname_feat = gen_ner_emb_by_layer(tokenizer, text_model, [["NONAME"]], add_special_token, layer_start, layer_end)
             face_proto_list.append(face_feat_add.unsqueeze(0))
             name_match_list[i] = torch.cat((name_match_list[i], noname_feat.unsqueeze(0).to("cuda")), dim=1)
-
+            # print(face_feat_add.size())
+            # print(name_match_list[i].size())
+    
     return face_proto_list, name_match_list
 
 
@@ -1208,12 +1412,12 @@ def make_random_faces(unique_name_dict, nomax, matched_names, name_match_list,  
     # make random faces list for each matched names
     face_random_list = []
     for i, matched_list in enumerate(matched_names):
-        if args.add_nullface and len(matched_list)>0:
+        if args.add_nullface:
             face_feat_add = torch.empty((len(matched_list)+1, 512))
         else:
             face_feat_add = torch.empty((len(matched_list), 512))
         for j, name in enumerate(matched_list):
-            num_faces = len(unique_name_dict[name]["img_dir"])
+            num_faces = len(unique_name_dict[name]["img_name"])
             if num_faces > 1:
                 face_idx = random.randint(0, num_faces-1)
                 face_feat = prepare_sampled_face(face_model, base_dir,
@@ -1224,11 +1428,11 @@ def make_random_faces(unique_name_dict, nomax, matched_names, name_match_list,  
                 unique_name_dict[name], 0, 160)
                 face_feat_add[j] = face_feat
         
-        if args.add_nullface and len(matched_list)>0:
+        if args.add_nullface:
             face_feat_add[-1] = null_face
         else:
             face_feat_add = face_feat_add
-
+        
         if nomax:
             face_random_list.append(face_feat_add.unsqueeze(0))
         else:
@@ -1239,36 +1443,45 @@ def make_random_faces(unique_name_dict, nomax, matched_names, name_match_list,  
     return face_random_list, name_match_list
 
 
-def get_all_face(face_dict, name, DEVICE, face_model, stage1_model):
-    """get face tensors based on bounding box"""
-    # face_tensors = torch.load(face_dict[name]["face_tensor"]).to(DEVICE)
-    facenet_tensors = torch.load(face_dict[name]["facenet_tensor"]).to(DEVICE)
-    
-    # face_features = stage1_model.projector(face_model(face_tensors))
-    face_features = stage1_model.projector(facenet_tensors)
+def get_all_faces(face_model, stage1_model, base_dir, unique_name_dict, out_face_size, face_feat_size):
+    face_features = torch.empty((len(unique_name_dict["img_name"]), face_feat_size))
+    for i, face_idx in enumerate(range(len(unique_name_dict["img_name"]))):
+        img_name = unique_name_dict["img_name"][face_idx][0]
+        img_dir = os.path.join(base_dir, "data/BergData/pics", img_name)
 
-    return face_features, facenet_tensors
+        face_x = unique_name_dict["face_x"][face_idx][0]
+        face_y = unique_name_dict["face_y"][face_idx][0]
+        face_size = unique_name_dict["face_size"][face_idx][0]
+        face_bbox = [face_x - face_size, face_y - face_size, face_x + face_size, face_y + face_size]
+
+        img = Image.open(img_dir).convert("RGB")
+        crop_face = crop_resize(img, face_bbox, out_face_size)  # size 3*160*160
+        face_features[i] = stage1_model.projector(face_model(transforms.ToTensor()(crop_face).unsqueeze_(0).to("cuda")))
+
+    return face_features
 
 
 def make_nearest_face(stage1_model, unique_name_dict, nomax, matched_names, name_match_list, add_special_token, layer_start, layer_end, text_model, face_model, null_face, out_face_size, face_feat_size, DEVICE):
     # make prototype faces list for each matched names
     face_proto_list = []
-    if not nomax:
-        noname_feat = gen_ner_emb_by_layer(tokenizer, text_model, [["NONAME"]], add_special_token, layer_start, layer_end)
-    # with torch.no_grad():
     for i, matched_list in enumerate(matched_names):
         if args.add_nullface:
             face_feat_add = torch.empty((len(matched_list)+1, 512))
         else:
             face_feat_add = torch.empty((len(matched_list), 512))
         for j, name in enumerate(matched_list):
-            face_features, facenet_tensors = get_all_face(unique_name_dict, name, DEVICE, face_model, stage1_model)
-            name_feat_z_i = stage1_model.ner_projector(stage1_model.ner_proj(name_match_list[i].squeeze(0)[j]))
-            face_idx = torch.argmax(torch.matmul(name_feat_z_i.unsqueeze(0), face_features.to(DEVICE).t()))
-            del face_features
+            face_features = get_all_faces(face_model, stage1_model, base_dir,  unique_name_dict[name], out_face_size, face_feat_size)
 
-            face_feat_add[j] = facenet_tensors[face_idx].unsqueeze(0)
-            
+            name_feat = gen_ner_emb_by_layer(tokenizer, text_model, [[name]], add_special_token, layer_start, layer_end)
+
+            name_feat_z_i = stage1_model.ner_projector(stage1_model.ner_proj(name_feat.to(DEVICE).squeeze(0)))
+
+            face_idx = torch.argmax(torch.matmul(name_feat_z_i.unsqueeze(0), face_features.to(DEVICE).t()))
+
+            face_feat = prepare_sampled_face(face_model, base_dir, unique_name_dict[name], face_idx, out_face_size)
+
+            face_feat_add[j] = face_feat
+        
         if args.add_nullface:
             face_feat_add[-1] = null_face
         else:
@@ -1277,11 +1490,11 @@ def make_nearest_face(stage1_model, unique_name_dict, nomax, matched_names, name
         if nomax:
             face_proto_list.append(face_feat_add.unsqueeze(0))
         else:
+            noname_feat = gen_ner_emb_by_layer(tokenizer, text_model, [["NONAME"]], add_special_token, layer_start, layer_end)
             face_proto_list.append(face_feat_add.unsqueeze(0))
             name_match_list[i] = torch.cat((name_match_list[i], noname_feat.unsqueeze(0).to("cuda")), dim=1)
     
     return face_proto_list, name_match_list
-
 
 
 
@@ -1291,6 +1504,7 @@ def train_incre_split_sum_epoch(model, text_model, face_model, sum_loss, frag_lo
     nb_tr_steps = 0
     matched_names_size_list = []
     for step, batch in enumerate(tqdm(train_dataloader, desc="Iteration")):
+
         if args.make_new:
             face_match_emb, face_add_emb, name_match_emb, face_unmatch_emb, name_unmatch_emb, num_matched_names = batch_match_incre_make_new(model, args.add_sample, text_model.cuda(), face_model.cuda(), args.add_extra_proj, args.proj_type, batch, unique_name_dict, unique_name_avg_face_dict, null_face)
 
@@ -1329,19 +1543,11 @@ def train_incre_split_sum_epoch(model, text_model, face_model, sum_loss, frag_lo
 
             elif face_unmatch_emb is None:
                 face_j_match, ner_j_match = model(face_match_emb.squeeze(1).cuda(), name_match_emb.squeeze(1).cuda())
-                loss1 = 0
-                loss2 = 0
-                loss3 = 0
-                loss4 = 0
                 if args.nomax:
                     loss = sum_loss(face_j_match, ner_j_match)
                 else:
                     loss = frag_loss(face_j_match, ner_j_match)
             else:
-                loss1 = 0
-                loss2 = 0
-                loss3 = 0
-                loss4 = 0
                 face_j_unmatch, ner_j_unmatch = model(face_unmatch_emb.squeeze(1).cuda(), name_unmatch_emb.squeeze(1).cuda())
                 loss = frag_loss(face_j_unmatch, ner_j_unmatch)
         else:
@@ -1364,19 +1570,11 @@ def train_incre_split_sum_epoch(model, text_model, face_model, sum_loss, frag_lo
                 loss = loss1 + loss2
             elif face_unmatch_emb is None:
                 face_j_match, ner_j_match = model(face_match_emb.squeeze(1).cuda(), name_match_emb.squeeze(1).cuda())
-                loss1 = 0
-                loss2 = 0
-                loss3 = 0
-                loss4 = 0
                 if args.nomax:
                     loss = sum_loss(face_j_match, ner_j_match)
                 else:
                     loss = frag_loss(face_j_match, ner_j_match)
             else:
-                loss1 = 0
-                loss2 = 0
-                loss3 = 0
-                loss4 = 0
                 face_j_unmatch, ner_j_unmatch = model(face_unmatch_emb.squeeze(1).cuda(), name_unmatch_emb.squeeze(1).cuda())
                 loss = frag_loss(face_j_unmatch, ner_j_unmatch)
 
@@ -1397,9 +1595,8 @@ def train_incre_split_sum_epoch(model, text_model, face_model, sum_loss, frag_lo
         optimizer.zero_grad()
 
         matched_names_size_list.append(num_matched_names)
-        # print(f"{loss},{loss1},{loss2}")
 
-        if step % 500 == 0 and not step == 0:
+        if step % 20 == 0 and not step == 0:
             if args.only_face_con and args.match_proto_agree:
                 logger.info(f"step {step} / {len(train_dataloader)} | loss = {tr_loss / nb_tr_steps} | current frag loss = {loss1} | face contras loss = {loss3} | match frag loss = {loss4}")
             elif args.only_face_con and not args.match_proto_agree:
@@ -1418,7 +1615,7 @@ def train_incre_split_sum_epoch(model, text_model, face_model, sum_loss, frag_lo
     return tr_loss / nb_tr_steps, matched_names_size_list
 
 
-def train_all_incre_split_sum(model, text_model, face_model, sum_loss, frag_loss, train_dataloader,unique_name_dict, unique_name_avg_face_dict, null_face, optimizer, scheduler, out_dir, out_file_name):
+def train_all_incre_split_sum(model, text_model, face_model, sum_loss, frag_loss, train_dataloader, unique_name_dict, unique_name_avg_face_dict, null_face, optimizer, scheduler, out_dir, out_file_name):
     train_losses = []
 
     for epoch_i in range(int(args.num_epoch)):
@@ -1450,18 +1647,12 @@ def train_all_incre_split_sum(model, text_model, face_model, sum_loss, frag_loss
     return train_losses
 
 
-if __name__ == "__main__":
-    seed = args.seed
 
-    if seed != 684331:
-        if os.path.isdir(os.path.join(args.out_dir[:-12], str(seed))):
-            out_dir = os.path.join(args.out_dir[:-12], str(seed))
-        else:
-            os.mkdir(os.path.join(args.out_dir[:-12], str(seed)))
-            out_dir = os.path.join(args.out_dir[:-12], str(seed))    
-        print(out_dir)
-    else:
-        out_dir = args.out_dir
+if __name__ == "__main__":
+    # torch.cuda.set_device(args.local_rank)
+    # torch.multiprocessing.set_start_method('spawn')
+    seed = args.seed
+    
 
     # DEVICE = torch.device("cuda", args.local_rank)
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_ids
@@ -1469,13 +1660,14 @@ if __name__ == "__main__":
     set_random_seed(seed)
     DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    base_dir = args.base_dir
-    dict_dir = args.dict_dir
+    sys_dir = args.sys_dir
+    base_dir = os.path.join(sys_dir, args.base_dir_name)
+    out_dir = args.out_dir
     # out_dir = os.path.join(sys_dir, args.out_dir_name)
 
     if args.split_sum :
         if args.add_extra_proj:
-            out_file_name = "stage1:agree{}_alpha{}_".format(args.agree_type, args.alpha) + "bsz{}-{}_F-{}_beta{}_split{}_{}_add-sample{}_{}_add-to{}_make_new{}-{}_face_con{}-{}-{}-{}_add_d_one-{}-{}_{}_nullface-{}".format(
+            out_file_name = "stage1:agree{}_alpha{}_".format(args.agree_type, args.alpha) + "bsz{}-{}_F-{}_beta{}_split{}_{}_add-sample{}_{}_add-to{}_make_new{}-{}_face_con{}-{}-{}-{}_add_d_one-{}-{}_nullface-{}".format(
                             args.train_batch_size,
                             args.num_epoch,
                             args.freeze_stage1,
@@ -1493,10 +1685,9 @@ if __name__ == "__main__":
                             args.face_con_replace_diag,
                             args.add_d_one,
                             args.match_proto_agree,
-                            args.data_name,
                             args.add_nullface)
         else:
-            out_file_name = "stage1:agree{}_alpha{}_".format(args.agree_type, args.alpha) + "bsz{}-{}_split{}_{}_add-sample{}_{}_add-to{}_make_new{}-{}_face_con{}-{}-{}-{}_add_d_one-{}-{}_{}_nullface-{}".format(args.train_batch_size,
+            out_file_name = "stage1:agree{}_alpha{}_".format(args.agree_type, args.alpha) + "bsz{}-{}_split{}_{}_add-sample{}_{}_add-to{}_make_new{}-{}_face_con{}-{}-{}-{}_add_d_one-{}-{}_nullface-{}".format(args.train_batch_size,
                              args.num_epoch,
                              args.split_sum,
                              args.nomax,
@@ -1511,7 +1702,6 @@ if __name__ == "__main__":
                              args.face_con_replace_diag,
                              args.add_d_one,
                              args.match_proto_agree,
-                             args.data_name,
                              args.add_nullface)
     else:
         out_file_name = datetime.datetime.now()
@@ -1537,9 +1727,17 @@ if __name__ == "__main__":
 
     logger.info(f"add one-one subset into training:{args.add_d_one}")
     logger.info(f"Do no add NONAME to matched list:{args.noname_to_match}")
-
+    
     logger.info(f"add null face to matched/added faces{args.add_nullface}")
 
+    # print("use mean:{}".format(args.use_mean))
+    # print("layer start:{}".format(args.layer_start))
+    # print("add special token:{}".format(args.add_special_token))
+
+    # print("margin for hinge loss (if used):{}".format(args.margin))
+    # print("max type:{}".format(args.max_type))
+    # print("use one hot:{}".format(args.use_onehot))
+    
     null_face = torch.randn((1,512)).cuda()
 
     tokenizer = BertTokenizer.from_pretrained(args.text_model)
@@ -1555,12 +1753,12 @@ if __name__ == "__main__":
 
     if args.no_stage1:
         unsup_frag_stage1 = UnsupFragAlign(args.ner_dim,
-                                           args.proj_type,
-                                           args.add_bias,
-                                           args.n_features,
-                                           args.proj_dim)
+                                        args.proj_type,
+                                        args.add_bias,
+                                        args.n_features,
+                                        args.proj_dim)
     else:
-        unsup_frag_stage1 = torch.load(os.path.join(args.stage1_model_dir, args.stage1_model_name))
+        unsup_frag_stage1 = torch.load(os.path.join(sys_dir, "results/unsup_frag", args.stage1_model_name))
 
     if args.add_extra_proj:
         unsup_frag_net = UnsupIncre(unsup_frag_stage1,
@@ -1575,8 +1773,10 @@ if __name__ == "__main__":
         unsup_frag_net = unsup_frag_stage1
 
     if torch.cuda.device_count() > 1:
+        # dist.init_process_group(backend="nccl")
         unsup_frag_net = nn.DataParallel(unsup_frag_net)
         unsup_frag_net = unsup_frag_net.cuda()
+        # unsup_frag_net = nn.parallel.DistributedDataParallel(unsup_frag_net, find_unused_parameters=True)
     else:
         unsup_frag_net = unsup_frag_net.cuda()
 
@@ -1590,27 +1790,29 @@ if __name__ == "__main__":
         frag_loss = FragAlignLoss(args.pos_factor, args.neg_factor, DEVICE)
     global_loss = GlobalRankLoss(args.beta, args.delta, args.smooth_term, DEVICE)
 
-    if args.add_d_one:
-        train_dict_name = os.path.join(dict_dir, args.full_dict_name)
-    else:
-        train_dict_name = os.path.join(dict_dir, args.dict_name)
+    # criterion = frag_loss
 
-    face_data = CelebDataset(base_dir,
-                             tokenizer,
-                             indexer,
-                             special_token_dict,
-                             "cpu",
-                             facenet,
-                             text_model,
-                             text_model_type=args.text_model_type,
-                             use_mean=args.use_mean,
-                             layer_start=args.layer_start,
-                             layer_end=args.layer_end,
-                             add_special_token=args.add_special_token,
-                             use_name_ner=args.use_name_ner,
-                             add_noname=args.add_noname,
-                             cons_noname=args.cons_noname,
-                             dict_name=train_dict_name)
+    if args.add_d_one:
+        train_dict_name = args.full_dict_name
+    else:
+        train_dict_name = args.dict_name
+
+    face_data = FaceDataset(base_dir,
+                            tokenizer,
+                            indexer,
+                            special_token_dict,
+                            "cpu",
+                            facenet,
+                            text_model,
+                            text_model_type=args.text_model_type,
+                            use_mean=args.use_mean,
+                            layer_start=args.layer_start,
+                            layer_end=args.layer_end,
+                            add_special_token=args.add_special_token,
+                            use_name_ner=args.use_name_ner,
+                            add_noname=args.add_noname,
+                            cons_noname=args.cons_noname,
+                            dict_name=train_dict_name)
     face_data = Subset(face_data, range(int(args.data_percent * len(face_data))))
 
     train_size = int(len(face_data) * 0.7)
@@ -1630,6 +1832,12 @@ if __name__ == "__main__":
 
     zero_pad = ZeroPadCollator()
 
+    # if torch.cuda.device_count() > 1:
+    #     data_sampler = torch.utils.data.distributed.DistributedSampler(face_data)
+    #     all_loader = DataLoader(face_data, batch_size=args.train_batch_size, collate_fn=zero_pad.collate_fn,
+    #                             shuffle=(data_sampler is None), pin_memory=False,
+    #                             sampler=data_sampler)
+    # else:
     if args.split_sum:
         all_loader = DataLoader(face_data, shuffle=args.shuffle, batch_size=args.train_batch_size, collate_fn=zero_pad.collate_fn, num_workers=4)
     elif args.manual_add_one:
@@ -1637,22 +1845,22 @@ if __name__ == "__main__":
     else:
         all_loader = DataLoader(face_data, shuffle=args.shuffle, batch_size=args.train_batch_size, collate_fn=zero_pad.collate_fn, num_workers=4)
 
-    face_data_full = CelebDataset(base_dir,
-                                  tokenizer,
-                                  indexer,
-                                  special_token_dict,
-                                  "cpu",
-                                  facenet,
-                                  text_model,
-                                  text_model_type=args.text_model_type,
-                                  use_mean=args.use_mean,
-                                  layer_start=args.layer_start,
-                                  layer_end=args.layer_end,
-                                  add_special_token=args.add_special_token,
-                                  use_name_ner=args.use_name_ner,
-                                  add_noname=args.add_noname,
-                                  cons_noname=args.cons_noname,
-                                  dict_name=os.path.join(dict_dir, args.full_dict_name))
+    face_data_full = FaceDataset(base_dir,
+                                 tokenizer,
+                                 indexer,
+                                 special_token_dict,
+                                 "cpu",
+                                 facenet,
+                                 text_model,
+                                 text_model_type=args.text_model_type,
+                                 use_mean=args.use_mean,
+                                 layer_start=args.layer_start,
+                                 layer_end=args.layer_end,
+                                 add_special_token=args.add_special_token,
+                                 use_name_ner=args.use_name_ner,
+                                 add_noname=args.add_noname,
+                                 cons_noname=args.cons_noname,
+                                 dict_name=args.full_dict_name)
 
     all_loader_test = DataLoader(face_data_full, batch_size=args.test_batch_size, num_workers=4)
 
@@ -1662,7 +1870,20 @@ if __name__ == "__main__":
 
     torch.cuda.current_device()
 
-    if args.data_type == "no_train":
+    if args.data_type == "test":
+        model, optimizer, scheduler = prep_for_training(unsup_frag_net, args.optimizer_type, train_size)
+
+        train_losses, valid_losses = train(model,
+                                           # criterion,
+                                           loss_type,
+                                           frag_loss,
+                                           global_loss,
+                                           train_loader,
+                                           val_loader,
+                                           optimizer,
+                                           scheduler)
+
+    elif args.data_type == "no_train":
         model, optimizer, scheduler = prep_for_training(unsup_frag_net, args.optimizer_type, len(face_data))
     elif args.split_sum:
         model, optimizer, scheduler = prep_for_training(unsup_frag_net, args.optimizer_type, train_size)
@@ -1670,20 +1891,18 @@ if __name__ == "__main__":
         torch.save(model, os.path.join(out_dir, out_file_name + ".pt"))
 
         sum_loss = BatchSoftmaxNomax()
-
-        with open(os.path.join(dict_dir, args.unique_name_avg_face_dict_name)) as f:
+        with open(os.path.join(base_dir, args.unique_name_avg_face_dict_name)) as f:
             unique_name_avg_face_dict = json.load(f)
         
         if args.add_sample == "mid-sim":
-            with open(os.path.join(dict_dir, "celeb_allname_unique_middle_sim_new.json")) as f:
+            with open(os.path.join(base_dir, "gt_dict_cleaned_phi_face_name_one_unique_middle_sim_new.json")) as f:
                 unique_name_dict = json.load(f)
         elif args.add_sample == "mid_pdist":
-            with open(os.path.join(dict_dir, "celeb_allname_unique_middle_pdist_new.json")) as f:
+            with open(os.path.join(base_dir, "gt_dict_cleaned_phi_face_name_one_unique_middle_pdist_new.json")) as f:
                 unique_name_dict = json.load(f)
         else:
-            with open(os.path.join(dict_dir, args.unique_name_dict_name)) as f:
+            with open(os.path.join(base_dir, args.unique_name_dict_name)) as f:
                 unique_name_dict = json.load(f)
-        
         train_losses = train_all_incre_split_sum(model,
                                                 text_model,
                                                 facenet, 
@@ -1699,7 +1918,7 @@ if __name__ == "__main__":
         torch.save(model, os.path.join(out_dir, out_file_name + ".pt"))
        
     elif args.sample_type == "True":
-        face_data_one = CelebDataset(base_dir,
+        face_data_one = FaceDataset(base_dir,
                                      tokenizer,
                                      indexer,
                                      special_token_dict,
@@ -1729,23 +1948,25 @@ if __name__ == "__main__":
 
         if args.add_extra_proj:
             torch.save(model,
-                       os.path.join(out_dir, "stage1:agree{}_alpha{}_".format(args.agree_type, args.alpha) + "{}_{}_{}_epoch{}_freeze{}_beta{}.pt".format(args.sample_type,
+                       os.path.join(out_dir, "stage1:agree{}_alpha{}_".format(args.agree_type, args.alpha) + "{}_{}_{}_epoch{}_freeze{}_beta{}_noname{}.pt".format(args.sample_type,
                                                                                                                      args.train_batch_size,
                                                                                                                         args.batch_rest,
                                                                                                                      args.num_epoch,
                                                                                                                      args.freeze_stage1,
-                                                                                                                     args.beta_incre)))
+                                                                                                                     args.beta_incre,
+                                                                                                                     args.noname_to_match)))
         else:
             torch.save(model,
-                       os.path.join(out_dir, "stage1:agree{}_alpha{}_".format(args.agree_type, args.alpha) + "{}_{}_{}_epoch{}.pt".format(args.sample_type,
+                       os.path.join(out_dir, "stage1:agree{}_alpha{}_".format(args.agree_type, args.alpha) + "{}_{}_{}_epoch{}_noname{}.pt".format(args.sample_type,
                                                                                                      args.train_batch_size,
                                                                                                         args.batch_rest,
-                                                                                                     args.num_epoch)))
+                                                                                                     args.num_epoch,
+                                                                                                     args.noname_to_match)))
     elif args.sample_type != "True":
         model, optimizer, scheduler = prep_for_training(unsup_frag_net, args.optimizer_type, len(face_data))
-        with open(os.path.join(dict_dir, args.unique_name_avg_face_dict_name)) as f:
+        with open(os.path.join(base_dir, args.unique_name_avg_face_dict_name)) as f:
             unique_name_avg_face_dict = json.load(f)
-        with open(os.path.join(dict_dir, args.unique_name_dict_name)) as f:
+        with open(os.path.join(base_dir, args.unique_name_dict_name)) as f:
             unique_name_dict = json.load(f)
         train_losses = train_all_control_one_incre(model,
                                                    loss_type, frag_loss, global_loss,
@@ -1767,11 +1988,14 @@ if __name__ == "__main__":
                            args.beta_incre)))
         else:
             torch.save(model,
-                       os.path.join(out_dir, "stage1:agree{}_alpha{}_".format(args.agree_type, args.alpha) + "{}_{}_{}_epoch{}.pt".format(args.sample_type, args.train_batch_size, args.batch_rest, args.num_epoch)))
+                       os.path.join(out_dir,
+                                    "stage1:agree{}_alpha{}_".format(args.agree_type, args.alpha) + "{}_{}_{}_epoch{}.pt".format(args.sample_type,
+                                                                                               args.train_batch_size,
+                                                                                               args.batch_rest,
+                                                                                               args.num_epoch)))
 
 
     else:
-        # To be cleaned
         model, optimizer, scheduler = prep_for_training(unsup_frag_net, args.optimizer_type, len(face_data))
 
         train_losses = train_all(model,
@@ -1800,7 +2024,8 @@ if __name__ == "__main__":
 
         for idx, data in tqdm(enumerate(test_loader_final)):
             image_name, all_faces, ner_pos_i, caption_raw, ner_list, gt_ner, gt_link, names, ner_ids = data["image_name"][0], data["face_emb"], data["ner_features"], data["caption_raw"],  data["ner_list"], data["gt_ner"], data["gt_link"], data["names"], data["ner_ids"]
-            
+            # print(caption_raw)
+            # print(ner_list)
             ner_context_pos_i = data["ner_context_features"]
 
             num_face_i = all_faces.size()[2]
@@ -1813,24 +2038,34 @@ if __name__ == "__main__":
                     face_z_i = (1 - args.beta_incre) * model.projector(all_faces.squeeze(0).squeeze(0)[j].cuda()) \
                                + args.beta_incre * model.model_one_stage.projector(all_faces.squeeze(0).squeeze(0)[j].cuda())
 
+                    # print(face_z_i.dim())
                     if face_z_i.dim() < 1:
                         face_z_i = face_z_i.unsqueeze(0)
+                    # print(face_z_i.size())
 
                     if args.add_context is True:
                         ner_i = ner_context_pos_i
                     else:
                         ner_i = ner_pos_i
 
-                    ner_z_j = (1 - args.beta_incre) * model.ner_proj(ner_i.squeeze(0).squeeze(0).to(DEVICE)) + args.beta_incre * model.model_one_stage.ner_proj(ner_i.squeeze(0).squeeze(0).to(DEVICE))
+                    ner_z_j = (1 - args.beta_incre) * model.ner_proj(ner_i.squeeze(0).squeeze(0).to(DEVICE)) \
+                              + args.beta_incre * model.model_one_stage.ner_proj(ner_i.squeeze(0).squeeze(0).to(DEVICE))
 
                     if args.proj_type == "one":
-                        ner_z_all = (1 - args.beta_incre) * model.projector(ner_z_j) + args.beta_incre * model.model_one_stage.projector(ner_z_j)
+                        ner_z_all = (1 - args.beta_incre) * model.projector(ner_z_j) \
+                                    + args.beta_incre * model.model_one_stage.projector(ner_z_j)
+                    # elif args.fine_tune:
+                    #     enc_ner_emb = model.create_ner_emb(ner_ids)
+                    #     ner_z_all = model.ner_projector(model.ner_proj(enc_ner_emb.squeeze(0).to(DEVICE)))
                     else:
-                        ner_z_all = (1 - args.beta_incre) * model.ner_projector(ner_z_j) + args.beta_incre * model.model_one_stage.ner_projector(ner_z_j)
+                        ner_z_all = (1 - args.beta_incre) * model.ner_projector(ner_z_j) \
+                                    + args.beta_incre * model.model_one_stage.ner_projector(ner_z_j)
                 else:
                     face_z_i = model.projector(all_faces.squeeze(0).squeeze(0)[j].cuda())
+                    # print(face_z_i.dim())
                     if face_z_i.dim() < 1:
                         face_z_i = face_z_i.unsqueeze(0)
+                    # print(face_z_i.size())
 
                     if args.add_context is True:
                         ner_i = ner_context_pos_i
@@ -1839,15 +2074,21 @@ if __name__ == "__main__":
 
                     if args.proj_type == "one":
                         ner_z_all = model.projector(model.ner_proj(ner_i.squeeze(0).squeeze(0).to(DEVICE)))
+                    # elif args.fine_tune:
+                    #     enc_ner_emb = model.create_ner_emb(ner_ids)
+                    #     ner_z_all = model.ner_projector(model.ner_proj(enc_ner_emb.squeeze(0).to(DEVICE)))
                     else:
                         ner_z_all = model.ner_projector(model.ner_proj(ner_i.squeeze(0).squeeze(0).to(DEVICE)))
 
+                # sim_all = 1 - 1 * torch.matmul(face_z_i, torch.transpose(ner_z_all, 0, 1))
+                # sim_final = test_relu(sim_all)
                 sim_all = torch.matmul(face_z_i, torch.transpose(ner_z_all, 0, 1))
                 face_list_all.append(sim_all.tolist())
 
             unsup_align_out[image_name] = {}
             if args.use_name_ner == "ner":
                 unsup_align_out[image_name]["ner_list"] = ner_list
+                # unsup_align_out[image_name]["sim_face_name"] = sim_final.tolist()
                 unsup_align_out[image_name]["sim_face_name"] = face_list_all
                 unsup_align_out[image_name]["gt_ner"] = gt_ner
 
@@ -1887,6 +2128,7 @@ if __name__ == "__main__":
                                             args.split_sum
                                         ))
         elif args.split_sum:
+            # if args.add_extra_proj:
             out_dir_name = os.path.join(out_dir, os.path.join(out_dir, out_file_name + ".json"))
 
         elif args.manual_add_one:
