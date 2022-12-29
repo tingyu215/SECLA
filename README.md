@@ -65,15 +65,11 @@ I'll further clean the code when I have time. Thanks for your understanding:)
 
 If you are interested in our work, please cite it as:
 
-    @misc{https://doi.org/10.48550/arxiv.2210.08957,
-    doi = {10.48550/ARXIV.2210.08957},
-    url = {https://arxiv.org/abs/2210.08957},
-    author = {Qu, Tingyu and Tuytelaars, Tinne and Moens, Marie-Francine},
-    keywords = {Computer Vision and Pattern Recognition (cs.CV), FOS: Computer and information sciences, FOS: Computer and information sciences},
-    title = {Weakly Supervised Face Naming with Symmetry-Enhanced Contrastive Loss},
-    publisher = {arXiv},
-    year = {2022},
-    copyright = {arXiv.org perpetual, non-exclusive license}
-    }
-
-Note: This is the arxiv version. I'll update it afterwards.
+    @InProceedings{Qu_2023_WACV,
+    author    = {Qu, Tingyu and Tuytelaars, Tinne and Moens, Marie-Francine},
+    title     = {Weakly Supervised Face Naming With Symmetry-Enhanced Contrastive Loss},
+    booktitle = {Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision (WACV)},
+    month     = {January},
+    year      = {2023},
+    pages     = {3505-3514}
+}
