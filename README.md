@@ -1,6 +1,6 @@
 # SECLA & SECLA-B (WACV 2023)
 
-This is the official implementation of "[Weakly Supervised Face Naming with Symmetry-Enhanced Contrastive Loss](https://arxiv.org/abs/2210.08957)" at WACV 2023
+This is the official implementation of "[Weakly Supervised Face Naming with Symmetry-Enhanced Contrastive Loss](https://openaccess.thecvf.com/content/WACV2023/html/Qu_Weakly_Supervised_Face_Naming_With_Symmetry-Enhanced_Contrastive_Loss_WACV_2023_paper.html)" at WACV 2023
 
 ## Preperation
 
